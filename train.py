@@ -9,6 +9,7 @@ import os
 from src.scalers.tabular import PowerScaler
 from src.scalers.satellite import SatelliteScaler
 from src.dataset import PVSatelliteDataset
+from src.models.dummy_model import Model
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PV forecast with satellite data")
@@ -100,6 +101,8 @@ def main(args: argparse.Namespace):
     for split in splits:
         print(f"{split.capitalize()} dataset samples: {len(datasets[split])}")
     print("Everything is ready for training loop!")
+
+    model = Model(in_channels=2, seq_len_in=args.seq_len_in, seq_len_out=args.seq_len_out)
 
 if __name__ == "__main__":
     parser = build_parser()
