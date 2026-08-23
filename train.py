@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 import src.processing as processing
 import torch
+import os
 
 from src.scalers.tabular import PowerScaler
 from src.scalers.satellite import SatelliteScaler
@@ -27,12 +28,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save_dir_power_scalers", type=str, default="checkpoints/scalers", help="Directory path for power scalers to be saved.")
     parser.add_argument("--save_path_sat_scalers", type=str, default="checkpoints/scalers/sat_scaler.json", help="Directory path for satellite scalers to be saved.")
 
-    parser.add_argument("--num_workers", type=int, default=2, help="Number of subprocesses to use for data loading.")
+    parser.add_argument("--num_workers", type=int, default=os.cpu_count(), help="Number of subprocesses to use for data loading.")
 
     return parser
 
 def prepare_and_save_scalers(power_splits: dict, sat_splits: dict, args: argparse.Namespace) -> tuple:
     """Fits, transforms, and saves both tabular and satellite scalers."""
+    print("Data split details:")
+    for split_name, df in power_splits.items():
+        start_time = df.index.min()
+        end_time = df.index.max()
+        num_records = len(df)
+        num_sat_files = len(sat_splits.get(split_name, []))
+        
+        print(f"  - {split_name.capitalize():<5}: {num_records:,} rows ({num_sat_files:,} sat files) | {start_time} -> {end_time}")
+
     print("Fitting and transforming power data (PowerScaler)...")
     power_scaler = PowerScaler(target_col=args.target_col, input_cols=args.input_cols)
     power_scaler.fit(train_dataset_df=power_splits["train"])
@@ -42,11 +52,11 @@ def prepare_and_save_scalers(power_splits: dict, sat_splits: dict, args: argpars
     power_scaler.save_scalers(save_dir=args.save_dir_power_scalers)
 
     sat_scaler_path = Path(args.save_path_sat_scalers)
-    sat_scaler = SatelliteScaler()
+    sat_scaler = SatelliteScaler(num_workers=args.num_workers)
     
     if sat_scaler_path.is_file():
         print(f"Loading existing satellite scaler from {sat_scaler_path}...")
-        sat_scaler.load_scaler(save_path=sat_scaler_path)
+        sat_scaler.load_scaler(load_path=sat_scaler_path)
     else:
         print(f"Fitting satellite data from {len(sat_splits['train'])} files (this might take a while)...")
         sat_scaler.fit(file_paths=sat_splits["train"].values())

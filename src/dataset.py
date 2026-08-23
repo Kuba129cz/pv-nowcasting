@@ -5,7 +5,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
-import xarray as xr
+from netCDF4 import Dataset
+from tqdm import tqdm
 
 from src.scalers.satellite import SatelliteScaler
 
@@ -35,7 +36,7 @@ class PVSatelliteDataset(torch.utils.data.Dataset):
     def _build_samples(self) -> list[dict[str, Any]]:
         samples = []
 
-        for t_anchor in sorted(self.sat_file_map.keys()):
+        for t_anchor in tqdm(sorted(self.sat_file_map.keys()), desc="Building dataset samples"):
             sat_times = [t_anchor - pd.Timedelta(minutes=self.latency_min + 15 * i) for i in reversed(range(self.seq_len_in))]
 
             first_target = t_anchor.ceil("h")
@@ -62,11 +63,11 @@ class PVSatelliteDataset(torch.utils.data.Dataset):
 
         sat_seq = []
         for file_path in sat_files:
-            with xr.open_dataset(file_path) as ds:
-                dssf = ds["DSSF_TOT"].squeeze().values       
-                diff = ds["FRACTION_DIFFUSE"].squeeze().values        
+            with Dataset(file_path, "r") as nc:
+                dssf = np.squeeze(nc.variables["DSSF_TOT"][:])      
+                diff = np.squeeze(nc.variables["FRACTION_DIFFUSE"][:])      
                 
-                img = np.stack([dssf, diff], axis=0) 
+                img = np.stack([dssf, diff], axis=0)
                 img_scaled = self.sat_scaler.transform(img)
                 img_scaled = np.nan_to_num(img_scaled, nan=0.0)
                 
