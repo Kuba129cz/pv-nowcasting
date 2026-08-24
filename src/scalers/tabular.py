@@ -43,7 +43,10 @@ class PowerScaler:
         orig_shape = y_scaled.shape
         
         y_flat = y_scaled.reshape(-1, 1)
-        y_inv_flat = self.target_scaler.inverse_transform(y_flat)
+
+        y_flat_df = pd.DataFrame(y_flat, columns=[self.target_col])
+
+        y_inv_flat = self.target_scaler.inverse_transform(y_flat_df)
         y_inverse = y_inv_flat.reshape(orig_shape)
 
         return y_inverse
