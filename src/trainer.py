@@ -138,12 +138,41 @@ def run_training(
 
         logger.log_epoch(epoch, train_loss, val_loss, train_metrics, val_metrics, current_lr)
 
-        print(
-            f"Epoch {epoch:03d}/{epochs:03d} | "
-            f"Train Loss: {train_loss:.4f} (MAE: {train_metrics['overall']['mae']:.2f} kW) | "
-            f"Val Loss: {val_loss:.4f} (MAE: {val_metrics['overall']['mae']:.2f} kW) | "
-            f"LR: {current_lr:.6f}"
-        )
+        # Extract overall metrics for cleaner code
+        tr_o, val_o = train_metrics["overall"], val_metrics["overall"]
+        tr_a, val_a = train_metrics["overall_active"], val_metrics["overall_active"]
+
+        print(f"\n{'='*90}")
+        print(f" EPOCH {epoch:03d}/{epochs:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | LR: {current_lr:.6f}")
+        print(f"{'-'*90}")
+
+        # Overall Metrics (All Hours)
+        print(" [ OVERALL METRICS - ALL HOURS ]")
+        print(f"   Train | MAE: {tr_o['mae']:6.2f} kW | RMSE: {tr_o['rmse']:6.2f} kW | nMAE: {tr_o['nmae']:5.2f}% | MBE: {tr_o['mbe']:6.2f} kW | R²: {tr_o['r2']:6.4f}")
+        print(f"   Val   | MAE: {val_o['mae']:6.2f} kW | RMSE: {val_o['rmse']:6.2f} kW | nMAE: {val_o['nmae']:5.2f}% | MBE: {val_o['mbe']:6.2f} kW | R²: {val_o['r2']:6.4f}")
+        print(f"{'-'*90}")
+
+        # Overall Metrics (Daylight Only)
+        print(" [ OVERALL METRICS - DAYLIGHT ONLY (P > 0) ]")
+        print(f"   Train | MAE: {tr_a['mae']:6.2f} kW | RMSE: {tr_a['rmse']:6.2f} kW | nMAE: {tr_a['nmae']:5.2f}% | MBE: {tr_a['mbe']:6.2f} kW | R²: {tr_a['r2']:6.4f}")
+        print(f"   Val   | MAE: {val_a['mae']:6.2f} kW | RMSE: {val_a['rmse']:6.2f} kW | nMAE: {val_a['nmae']:5.2f}% | MBE: {val_a['mbe']:6.2f} kW | R²: {val_a['r2']:6.4f}")
+        print(f"{'-'*90}")
+
+        # Per-Step Metrics Table (Daylight Only)
+        print(" [ HOURLY BREAKDOWN - MAE & nMAE (Daylight Only) ]")
+        print("   Step  |  Train MAE  |   Val MAE   | Train nMAE |  Val nMAE ")
+        print("  -------------------------------------------------------------")
+
+        seq_len_out = len(train_metrics["per_step"]["mae"])
+        for step in range(seq_len_out):
+            tr_mae = train_metrics["per_step_active"]["mae"][step]
+            val_mae = val_metrics["per_step_active"]["mae"][step]
+            tr_nmae = train_metrics["per_step_active"]["nmae"][step]
+            val_nmae = val_metrics["per_step_active"]["nmae"][step]
+            
+            print(f"   t+{step+1:<2}  | {tr_mae:8.2f} kW | {val_mae:8.2f} kW | {tr_nmae:7.2f} % | {val_nmae:7.2f} %")
+            
+        print(f"{'='*90}\n")
 
         # 5. Control Early Stopping
         if early_stopping(val_loss, model):
