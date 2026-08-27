@@ -11,7 +11,7 @@ import os
 from src.scalers.tabular import PowerScaler
 from src.scalers.satellite import SatelliteScaler
 from src.dataset import PVSatelliteDataset
-from src.models.dummy_model import Model
+from src.models.dummy_convlstm import Model
 from src.metrics import ErrorTracker
 from src.logger import TensorBoardLogger
 from src.trainer import EarlyStopping, run_training
