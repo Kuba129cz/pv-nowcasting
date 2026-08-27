@@ -1,9 +1,9 @@
-# src/engine.py
 from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import argparse
 
 from src.metrics import ErrorTracker
 from src.logger import TensorBoardLogger
@@ -111,6 +111,50 @@ def evaluate(
     return epoch_loss, metrics
 
 
+def _print_metrics_summary(metrics: dict, stage_name: str, second_metrics: dict | None = None, second_stage_name: str | None = None):
+    o = metrics["overall"]
+    a = metrics["overall_active"]
+    
+    print(f"\n{'='*90}")
+    print(f" [ OVERALL METRICS - ALL HOURS ({stage_name}) ]")
+    print(f"   {stage_name:<5} | MAE: {o['mae']:6.2f} kW | RMSE: {o['rmse']:6.2f} kW | nMAE: {o['nmae']:5.2f}% | MBE: {o['mbe']:6.2f} kW | R²: {o['r2']:6.4f}")
+    
+    if second_metrics and second_stage_name:
+        so = second_metrics["overall"]
+        print(f"   {second_stage_name:<5} | MAE: {so['mae']:6.2f} kW | RMSE: {so['rmse']:6.2f} kW | nMAE: {so['nmae']:5.2f}% | MBE: {so['mbe']:6.2f} kW | R²: {so['r2']:6.4f}")
+    print(f"{'-'*90}")
+
+    print(f" [ OVERALL METRICS - DAYLIGHT ONLY (P > 0) ({stage_name}) ]")
+    print(f"   {stage_name:<5} | MAE: {a['mae']:6.2f} kW | RMSE: {a['rmse']:6.2f} kW | nMAE: {a['nmae']:5.2f}% | MBE: {a['mbe']:6.2f} kW | R²: {a['r2']:6.4f}")
+    
+    if second_metrics and second_stage_name:
+        sa = second_metrics["overall_active"]
+        print(f"   {second_stage_name:<5} | MAE: {sa['mae']:6.2f} kW | RMSE: {sa['rmse']:6.2f} kW | nMAE: {sa['nmae']:5.2f}% | MBE: {sa['mbe']:6.2f} kW | R²: {sa['r2']:6.4f}")
+    print(f"{'-'*90}")
+
+    print(f" [ HOURLY BREAKDOWN - MAE & nMAE (Daylight Only) ]")
+    if second_metrics and second_stage_name:
+        print(f"   Step  | {stage_name} MAE | {second_stage_name} MAE | {stage_name} nMAE | {second_stage_name} nMAE")
+        print(f"  -------------------------------------------------------------")
+        seq_len_out = len(metrics["per_step"]["mae"])
+        for step in range(seq_len_out):
+            m1 = metrics["per_step_active"]["mae"][step]
+            m2 = second_metrics["per_step_active"]["mae"][step]
+            n1 = metrics["per_step_active"]["nmae"][step]
+            n2 = second_metrics["per_step_active"]["nmae"][step]
+            print(f"   t+{step+1:<2}  | {m1:8.2f} kW | {m2:8.2f} kW | {n1:7.2f} % | {n2:7.2f} %")
+    else:
+        print(f"   Step  | {stage_name} MAE | {stage_name} nMAE")
+        print(f"  -----------------------------------")
+        seq_len_out = len(metrics["per_step"]["mae"])
+        for step in range(seq_len_out):
+            m = metrics["per_step_active"]["mae"][step]
+            n = metrics["per_step_active"]["nmae"][step]
+            print(f"   t+{step+1:<2}  | {m:8.2f} kW | {n:7.2f} %")
+            
+    print(f"{'='*90}\n")
+
+
 def run_training(
     model: nn.Module,
     loaders: dict[str, DataLoader],
@@ -138,43 +182,42 @@ def run_training(
 
         logger.log_epoch(epoch, train_loss, val_loss, train_metrics, val_metrics, current_lr)
 
-        # Extract overall metrics for cleaner code
-        tr_o, val_o = train_metrics["overall"], val_metrics["overall"]
-        tr_a, val_a = train_metrics["overall_active"], val_metrics["overall_active"]
+        print(f"\n EPOCH {epoch:03d}/{epochs:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | LR: {current_lr:.6f}")
+        
+        _print_metrics_summary(train_metrics, "Train", val_metrics, "Val")
 
-        print(f"\n{'='*90}")
-        print(f" EPOCH {epoch:03d}/{epochs:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | LR: {current_lr:.6f}")
-        print(f"{'-'*90}")
-
-        # Overall Metrics (All Hours)
-        print(" [ OVERALL METRICS - ALL HOURS ]")
-        print(f"   Train | MAE: {tr_o['mae']:6.2f} kW | RMSE: {tr_o['rmse']:6.2f} kW | nMAE: {tr_o['nmae']:5.2f}% | MBE: {tr_o['mbe']:6.2f} kW | R²: {tr_o['r2']:6.4f}")
-        print(f"   Val   | MAE: {val_o['mae']:6.2f} kW | RMSE: {val_o['rmse']:6.2f} kW | nMAE: {val_o['nmae']:5.2f}% | MBE: {val_o['mbe']:6.2f} kW | R²: {val_o['r2']:6.4f}")
-        print(f"{'-'*90}")
-
-        # Overall Metrics (Daylight Only)
-        print(" [ OVERALL METRICS - DAYLIGHT ONLY (P > 0) ]")
-        print(f"   Train | MAE: {tr_a['mae']:6.2f} kW | RMSE: {tr_a['rmse']:6.2f} kW | nMAE: {tr_a['nmae']:5.2f}% | MBE: {tr_a['mbe']:6.2f} kW | R²: {tr_a['r2']:6.4f}")
-        print(f"   Val   | MAE: {val_a['mae']:6.2f} kW | RMSE: {val_a['rmse']:6.2f} kW | nMAE: {val_a['nmae']:5.2f}% | MBE: {val_a['mbe']:6.2f} kW | R²: {val_a['r2']:6.4f}")
-        print(f"{'-'*90}")
-
-        # Per-Step Metrics Table (Daylight Only)
-        print(" [ HOURLY BREAKDOWN - MAE & nMAE (Daylight Only) ]")
-        print("   Step  |  Train MAE  |   Val MAE   | Train nMAE |  Val nMAE ")
-        print("  -------------------------------------------------------------")
-
-        seq_len_out = len(train_metrics["per_step"]["mae"])
-        for step in range(seq_len_out):
-            tr_mae = train_metrics["per_step_active"]["mae"][step]
-            val_mae = val_metrics["per_step_active"]["mae"][step]
-            tr_nmae = train_metrics["per_step_active"]["nmae"][step]
-            val_nmae = val_metrics["per_step_active"]["nmae"][step]
-            
-            print(f"   t+{step+1:<2}  | {tr_mae:8.2f} kW | {val_mae:8.2f} kW | {tr_nmae:7.2f} % | {val_nmae:7.2f} %")
-            
-        print(f"{'='*90}\n")
-
-        # 5. Control Early Stopping
         if early_stopping(val_loss, model):
             print("Early stopping triggered! Training finished.")
             break
+
+
+def run_testing(
+    model: nn.Module,
+    dataloader: DataLoader,
+    criterion: nn.Module,
+    tracker: ErrorTracker,
+    device: torch.device,
+    best_model_path: Path | str,
+    logger: TensorBoardLogger, 
+    args: argparse.Namespace   
+) -> dict:
+    print("\n" + "="*90)
+    print(" LOADING BEST MODEL FOR FINAL TEST EVALUATION")
+    print("="*90)
+    
+    model.load_state_dict(torch.load(best_model_path))
+
+    test_loss, test_metrics = evaluate(
+        model=model, 
+        dataloader=dataloader, 
+        criterion=criterion, 
+        tracker=tracker, 
+        device=device, 
+        stage="Test"
+    )
+
+    logger.log_test(epoch=0, test_loss=test_loss, metrics=test_metrics, args=args)
+
+    _print_metrics_summary(test_metrics, "Test")
+    
+    return test_metrics

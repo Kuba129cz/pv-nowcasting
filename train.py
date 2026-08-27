@@ -11,10 +11,14 @@ import os
 from src.scalers.tabular import PowerScaler
 from src.scalers.satellite import SatelliteScaler
 from src.dataset import PVSatelliteDataset
+<<<<<<< Updated upstream
 from src.models.dummy_convlstm import Model
+=======
+from src.models.dummy_model2 import Model
+>>>>>>> Stashed changes
 from src.metrics import ErrorTracker
 from src.logger import TensorBoardLogger
-from src.trainer import EarlyStopping, run_training
+from src.trainer import EarlyStopping, run_training, run_testing
 
 LOSS_FUNCTIONS = {
     "mae": torch.nn.L1Loss(),
@@ -28,15 +32,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train_ratio", type=float, default=0.75, help="Train split ratio")
     parser.add_argument("--val_ratio", type=float, default=0.20, help="Validation split ratio")
 
-    parser.add_argument("--sat_dir", type=Path, default=Path("LSA_MDSSTFD_CROPPED_128x128"), help="Directory path to satellite NetCDF files.")
+    parser.add_argument("--sat_dir", type=Path, default=Path("dataset/LSA_MDSSTFD_CROPPED_128x128"), help="Directory path to satellite NetCDF files.")
     parser.add_argument("--dataset_path", type=Path, default=Path("dataset/aba_train.csv"), help="File path to power generation CSV dataset.")
     parser.add_argument("--target_col", type=str, default="energy", help="Target column name in CSV.")
     parser.add_argument("--input_cols", type=str, nargs="+", default=[], help="List of input columns from CSV (separated by space).")
     
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for DataLoaders.")
-    parser.add_argument("--num_epochs", default=28, type=int)
-    parser.add_argument("--seq_len_in", type=int, default=4, help="Input satellite sequence length.")
-    parser.add_argument("--seq_len_out", type=int, default=24, help="Output target sequence length.")
+    parser.add_argument("--batch_size", type=int, default=128, help="Batch size for DataLoaders.")
+    parser.add_argument("--num_epochs", default=5, type=int)
+    parser.add_argument("--seq_len_in", type=int, default=8, help="Input satellite sequence length.")
+    parser.add_argument("--seq_len_out", type=int, default=4, help="Output target sequence length.")
+    parser.add_argument("--latency_min", type=int, default=15, help="Latency of sattelite image.")
 
     parser.add_argument("--save_dir_power_scalers", type=str, default="checkpoints/scalers", help="Directory path for power scalers to be saved.")
     parser.add_argument("--save_path_sat_scalers", type=str, default="checkpoints/scalers/sat_scaler.json", help="Directory path for satellite scalers to be saved.")
@@ -44,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--nominal_capacity_fve", type=int, default=1293, help="Nominal output of PV.")
 
-    parser.add_argument("--num_workers", type=int, default=os.cpu_count(), help="Number of subprocesses to use for data loading.")
+    parser.add_argument("--num_workers", type=int, default=16, help="Number of subprocesses to use for data loading.")
 
     parser.add_argument("--loss_func", type=str, default="mae", choices=["mae", "mse", "huber"], help="Choose loss function (choices: %(choices)s)")
     parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
@@ -104,7 +109,8 @@ def main(args: argparse.Namespace):
             sat_scaler=sat_scaler,
             seq_len_in=args.seq_len_in,
             seq_len_out=args.seq_len_out,
-            target_col=args.target_col
+            target_col=args.target_col,
+            latency_min=args.latency_min
             ) 
             for split in splits
     }
@@ -114,7 +120,9 @@ def main(args: argparse.Namespace):
             batch_size=args.batch_size,
             shuffle=(split == "train"),
             num_workers=args.num_workers,
-            pin_memory=True
+            pin_memory=True,
+            prefetch_factor=8,
+            persistent_workers=True
         ) 
         for split in splits
     }
@@ -150,6 +158,18 @@ def main(args: argparse.Namespace):
         epochs=args.num_epochs,
         device=device
     )
+
+    run_testing(
+        model=model,
+        dataloader=loaders["test"],
+        criterion=criterion,
+        tracker=tracker,
+        device=device,
+        best_model_path=early_stopping.checkpoint_path,
+        logger=logger, 
+        args=args     
+    )
+
     logger.close()
 
 if __name__ == "__main__":

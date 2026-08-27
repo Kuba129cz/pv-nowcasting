@@ -13,8 +13,6 @@ class Model(torch.nn.Module):
         self.output = torch.nn.Linear(8, seq_len_out)
 
     def forward(self, sat_seq: torch.tensor) -> torch.Tensor:
-        print(f"Shape= {sat_seq.shape}")
-
         x = sat_seq.permute(0, 2, 1, 3, 4)
         x = self.conv3d(x)
         x = self.batchNorm3d(x)
