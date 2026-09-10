@@ -11,11 +11,7 @@ import os
 from src.scalers.tabular import PowerScaler
 from src.scalers.satellite import SatelliteScaler
 from src.dataset import PVSatelliteDataset
-<<<<<<< Updated upstream
 from src.models.dummy_convlstm import Model
-=======
-from src.models.dummy_model2 import Model
->>>>>>> Stashed changes
 from src.metrics import ErrorTracker
 from src.logger import TensorBoardLogger
 from src.trainer import EarlyStopping, run_training, run_testing
@@ -33,11 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val_ratio", type=float, default=0.20, help="Validation split ratio")
 
     parser.add_argument("--sat_dir", type=Path, default=Path("dataset/LSA_MDSSTFD_CROPPED_128x128"), help="Directory path to satellite NetCDF files.")
-    parser.add_argument("--dataset_path", type=Path, default=Path("dataset/aba_train.csv"), help="File path to power generation CSV dataset.")
+    parser.add_argument("--dataset_path", type=Path, default=Path("dataset/aba_train_15min.csv"), help="File path to power generation CSV dataset.")
     parser.add_argument("--target_col", type=str, default="energy", help="Target column name in CSV.")
-    parser.add_argument("--input_cols", type=str, nargs="+", default=[], help="List of input columns from CSV (separated by space).")
+    parser.add_argument("--history_cols", type=str, nargs="+", default=[], help="List of tabular columns available for past sequence (e.g., temp, humidity, past_power).")
+    parser.add_argument("--future_cols", type=str, nargs="+", default=[], help="List of NWP forecast columns available for future horizons (e.g., nwp_temp, solar_azimuth).")
     
-    parser.add_argument("--batch_size", type=int, default=128, help="Batch size for DataLoaders.")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for DataLoaders.")
     parser.add_argument("--num_epochs", default=5, type=int)
     parser.add_argument("--seq_len_in", type=int, default=8, help="Input satellite sequence length.")
     parser.add_argument("--seq_len_out", type=int, default=4, help="Output target sequence length.")
@@ -70,7 +67,7 @@ def prepare_and_save_scalers(power_splits: dict, sat_splits: dict, args: argpars
         print(f"  - {split_name.capitalize():<5}: {num_records:,} rows ({num_sat_files:,} sat files) | {start_time} -> {end_time}")
 
     print("Fitting and transforming power data (PowerScaler)...")
-    power_scaler = PowerScaler(target_col=args.target_col, input_cols=args.input_cols)
+    power_scaler = PowerScaler(target_col=args.target_col, input_cols=pd.unique(args.history_cols + args.future_cols)))
     power_scaler.fit(train_dataset_df=power_splits["train"])
     
     for split in ["train", "val", "test"]:
@@ -93,7 +90,7 @@ def prepare_and_save_scalers(power_splits: dict, sat_splits: dict, args: argpars
 
 def main(args: argparse.Namespace):
     print("Loading and splitting data...")
-    dataset = processing.load_dataset(dataset_path=args.dataset_path, target_col=args.target_col)
+    dataset = processing.load_dataset(dataset_path=args.dataset_path, target_col=args.target_col, input_cols= args.input_cols)
     satellite_data = processing.load_satellite_map(sat_dir=args.sat_dir)
     power_splits, sat_splits = processing.create_splits(dataset_df=dataset, sat_map=satellite_data, train_ratio=args.train_ratio, val_ratio=args.val_ratio)
 
