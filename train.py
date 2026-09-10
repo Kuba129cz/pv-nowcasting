@@ -37,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for DataLoaders.")
     parser.add_argument("--num_epochs", default=5, type=int)
     parser.add_argument("--seq_len_in", type=int, default=8, help="Input satellite sequence length.")
+    parser.add_argument("--seq_len_history_power", type=int, default=24, help="Power history sequence length.")
     parser.add_argument("--seq_len_out", type=int, default=4, help="Output target sequence length.")
     parser.add_argument("--latency_min", type=int, default=15, help="Latency of sattelite image.")
 
@@ -106,6 +107,7 @@ def main(args: argparse.Namespace):
             sat_scaler=sat_scaler,
             seq_len_in=args.seq_len_in,
             seq_len_out=args.seq_len_out,
+            seq_len_history_power= args.seq_len_history_power,
             target_col=args.target_col,
             latency_min=args.latency_min
             ) 

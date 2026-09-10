@@ -19,11 +19,12 @@ class PVSatelliteDataset(torch.utils.data.Dataset):
         sat_scaler: SatelliteScaler,
         seq_len_in: int, 
         seq_len_out: int, 
+        seq_len_history_power: int,
         target_col: str = "energy", 
         history_cols: list[str] = None,
-        history_cols_1h: list[str] = None,
         future_cols: list[str] = None,
-        latency_min: int = 30
+        latency_min: int = 30,
+        power_latency_min: int = 15
     ):
         self.sat_file_map = sat_file_map
         self.power_df = power_df
@@ -31,16 +32,23 @@ class PVSatelliteDataset(torch.utils.data.Dataset):
         
         self.seq_len_in = seq_len_in
         self.seq_len_out = seq_len_out
+        self.seq_len_history_power = seq_len_history_power
         self.target_col = target_col
         self.history_cols = history_cols or []
-        self.history_cols_1h = [col for col in (history_cols_1h or []) if col != self.target_col]
         self.future_cols = [col for col in (future_cols or []) if col != self.target_col]
         self.latency_min = latency_min
+        self.power_latency_min = power_latency_min
 
         self.samples = self._build_samples()
 
     def _build_samples(self) -> list[dict[str, Any]]:
         samples = []
+
+        power_index_set = set(self.power_df.index)
+        sat_keys_set = set(self.sat_file_map.keys())
+
+        latency_steps = self.latency_min // 15
+        seq_len_out_15m = latency_steps + (self.seq_len_out * 4)
 
         for t_anchor in tqdm(sorted(self.sat_file_map.keys()), desc="Building dataset samples"):
             sat_times = [
@@ -48,16 +56,13 @@ class PVSatelliteDataset(torch.utils.data.Dataset):
                 for i in reversed(range(self.seq_len_in))
             ]
 
-            last_hourly_anchor = t_anchor.floor("h")
+            last_hourly_anchor = (t_anchor - pd.Timedelta(minutes=self.power_latency_min)).floor("h")
             history_power_times = [
                 last_hourly_anchor - pd.Timedelta(hours=i) 
-                for i in reversed(range(self.seq_len_out))
+                for i in reversed(range(self.seq_len_history_power))
             ]
 
-            latency_steps = self.latency_min // 15
-            seq_len_out_15m = latency_steps + (self.seq_len_out * 4)
             last_sat_time = t_anchor - pd.Timedelta(minutes=self.latency_min)
-
             future_15m_meteo_times = [
                 last_sat_time + pd.Timedelta(minutes=15 * (i + 1)) 
                 for i in range(seq_len_out_15m)
@@ -69,11 +74,11 @@ class PVSatelliteDataset(torch.utils.data.Dataset):
 
             target_times = [first_target + pd.Timedelta(hours=i) for i in range(self.seq_len_out)]
 
-            has_sat = all(t in self.sat_file_map for t in sat_times)
-            has_meteo_history = all(t in self.power_df.index for t in sat_times)
-            has_history_power = all(t in self.power_df.index for t in history_power_times)
-            has_meteo_future = all(t in self.power_df.index for t in future_15m_meteo_times)
-            has_target = all(t in self.power_df.index for t in target_times)
+            has_sat = all(t in sat_keys_set for t in sat_times)
+            has_meteo_history = all(t in power_index_set for t in sat_times)
+            has_history_power = all(t in power_index_set for t in history_power_times)
+            has_meteo_future = all(t in power_index_set for t in future_15m_meteo_times)
+            has_target = all(t in power_index_set for t in target_times)
 
             if has_sat and has_meteo_history and has_history_power and has_meteo_future and has_target:
                 meteo_hist = self.power_df.loc[sat_times, self.history_cols].values
@@ -91,12 +96,11 @@ class PVSatelliteDataset(torch.utils.data.Dataset):
                 if not has_nan:
                     sample = {
                         "sat_files": [self.sat_file_map[t] for t in sat_times],
-                        "meteo_history": meteo_hist,   # [seq_len_in, num_history_cols] (15m)
-                        "history_power": hist_power,   # [seq_len_out] (1h)
-                        "meteo_future": meteo_fut,     # [seq_len_out_15m, num_future_cols] (15m)
-                        "target_power": target_p       # [seq_len_out] (1h)
+                        "meteo_history": meteo_hist,         # [seq_len_in, num_history_cols] (15m)
+                        "history_power": hist_power,         # [seq_len_history_power] (1h)
+                        "meteo_future": meteo_fut,           # [seq_len_out_15m, num_future_cols] (15m)
+                        "target_power": target_p             # [seq_len_out] (1h)
                     }
-                        
                     samples.append(sample)
 
         return samples
@@ -126,9 +130,9 @@ class PVSatelliteDataset(torch.utils.data.Dataset):
         y_target_pwr = torch.tensor(sample["target_power"], dtype=torch.float32)
 
         return {
-            "sat_seq": X_sat,           # [seq_len_in, C, H, W]
-            "meteo_history": X_meteo_hist, # [seq_len_in, num_history_cols]
-            "history_power": X_hist_pwr,   # [seq_len_out]
-            "meteo_future": X_meteo_fut,   # [seq_len_out_15m, num_future_cols]
-            "target": y_target_pwr         # [seq_len_out]
+            "sat_seq": X_sat,                 # [seq_len_in, C, H, W]
+            "meteo_history": X_meteo_hist,       # [seq_len_in, num_history_cols]
+            "history_power": X_hist_pwr,         # [seq_len_history_power]
+            "meteo_future": X_meteo_fut,         # [seq_len_out_15m, num_future_cols]
+            "target": y_target_pwr               # [seq_len_out]
         }
