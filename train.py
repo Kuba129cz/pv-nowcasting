@@ -11,7 +11,7 @@ import os
 from src.scalers.tabular import PowerScaler
 from src.scalers.satellite import SatelliteScaler
 from src.dataset import PVSatelliteDataset
-from src.models.dummy_convlstm import Model
+from src.models.model import Model
 from src.metrics import ErrorTracker
 from src.logger import TensorBoardLogger
 from src.trainer import EarlyStopping, run_training, run_testing
@@ -25,34 +25,63 @@ LOSS_FUNCTIONS = {
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PV forecast with satellite data")
 
+    # Data & Paths
     parser.add_argument("--train_ratio", type=float, default=0.75, help="Train split ratio")
     parser.add_argument("--val_ratio", type=float, default=0.20, help="Validation split ratio")
-
     parser.add_argument("--sat_dir", type=Path, default=Path("dataset/LSA_MDSSTFD_CROPPED_128x128"), help="Directory path to satellite NetCDF files.")
     parser.add_argument("--dataset_path", type=Path, default=Path("dataset/aba_train_15min.csv"), help="File path to power generation CSV dataset.")
     parser.add_argument("--target_col", type=str, default="energy", help="Target column name in CSV.")
-    parser.add_argument("--history_cols", type=str, nargs="+", default=[], help="List of tabular columns available for past sequence (e.g., temp, humidity, past_power).")
-    parser.add_argument("--future_cols", type=str, nargs="+", default=[], help="List of NWP forecast columns available for future horizons (e.g., nwp_temp, solar_azimuth).")
-    
+    parser.add_argument("--history_cols", type=str, nargs="+", default=[], help="List of tabular columns available for past sequence.")
+    parser.add_argument("--future_cols", type=str, nargs="+", default=[], help="List of NWP forecast columns available for future horizons.")
+
+    # Sequence lengths
+    parser.add_argument("--seq_len_in", type=int, default=8, help="Input satellite/meteo history sequence length.")
+    parser.add_argument("--seq_len_history_power", type=int, default=24, help="Power history sequence length.")
+    parser.add_argument("--seq_len_out", type=int, default=4, help="Output target sequence length in hours.")
+    parser.add_argument("--seq_len_out_15m", type=int, default=16, help="Output target sequence length in 15min steps (e.g. 4h * 4 = 16).")
+    parser.add_argument("--latency_min", type=int, default=15, help="Latency of satellite image.")
+
+    # History Meteo Encoder
+    parser.add_argument("--past_hidden_size", type=int, default=32, help="LSTM hidden size for history meteo encoder.")
+    parser.add_argument("--past_cnn_filters", type=int, default=32, help="CNN filter count for history meteo encoder.")
+    parser.add_argument("--past_kernel", type=int, default=3, help="CNN kernel size for history meteo encoder.")
+    parser.add_argument("--past_dropout", type=float, default=0.1, help="Dropout for history meteo encoder.")
+
+    # Future Meteo Encoder
+    parser.add_argument("--future_hidden_size", type=int, default=32, help="LSTM hidden size for future meteo encoder.")
+    parser.add_argument("--future_cnn_filters", type=int, default=32, help="CNN filter count for future meteo encoder.")
+    parser.add_argument("--future_dropout", type=float, default=0.1, help="Dropout for future meteo encoder.")
+    parser.add_argument("--future_kernel_L0", type=int, default=3, help="Kernel size for layer 0 in future meteo CNN.")
+    parser.add_argument("--future_kernel_L1", type=int, default=3, help="Kernel size for layer 1 in future meteo CNN.")
+
+    # Satellite Encoder & Spatial dimensions
+    parser.add_argument("--sat_hidden_dim", type=int, default=64, help="Hidden channels for ConvLSTM in SatelliteEncoder.")
+    parser.add_argument("--sat_h_out", type=int, default=32, help="Spatial height of satellite features after CNN stem.")
+    parser.add_argument("--sat_w_out", type=int, default=32, help="Spatial width of satellite features after CNN stem.")
+
+    # History Power Encoder
+    parser.add_argument("--power_hidden_size", type=int, default=32, help="LSTM hidden size for power history encoder.")
+    parser.add_argument("--power_cnn_filters", type=int, default=32, help="CNN filter count for power history encoder.")
+    parser.add_argument("--power_dropout", type=float, default=0.1, help="Dropout for power history encoder.")
+
+    # Decoder & Attention
+    parser.add_argument("--attention_dim", type=int, default=64, help="Embedding dimension for CrossAttention.")
+    parser.add_argument("--feed_forward_net_dim", type=int, default=128, help="Feed forward hidden dimension in Decoder.")
+    parser.add_argument("--num_heads", type=int, default=2, help="Number of attention heads.")
+    parser.add_argument("--dropout", type=float, default=0.1, help="Dropout rate in Decoder.")
+
+    # Training & Logging
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size for DataLoaders.")
     parser.add_argument("--num_epochs", default=5, type=int)
-    parser.add_argument("--seq_len_in", type=int, default=8, help="Input satellite sequence length.")
-    parser.add_argument("--seq_len_history_power", type=int, default=24, help="Power history sequence length.")
-    parser.add_argument("--seq_len_out", type=int, default=4, help="Output target sequence length.")
-    parser.add_argument("--latency_min", type=int, default=15, help="Latency of sattelite image.")
-
-    parser.add_argument("--save_dir_power_scalers", type=str, default="checkpoints/scalers", help="Directory path for power scalers to be saved.")
-    parser.add_argument("--save_path_sat_scalers", type=str, default="checkpoints/scalers/sat_scaler.json", help="Directory path for satellite scalers to be saved.")
+    parser.add_argument("--save_dir_power_scalers", type=str, default="checkpoints/scalers", help="Directory path for power scalers.")
+    parser.add_argument("--save_path_sat_scalers", type=str, default="checkpoints/scalers/sat_scaler.json", help="Path for sat scalers.")
     parser.add_argument("--log_dir", type=str, default="checkpoints/runs/aba/", help="Directory path for logger.")
-
     parser.add_argument("--nominal_capacity_fve", type=int, default=1293, help="Nominal output of PV.")
-
-    parser.add_argument("--num_workers", type=int, default=16, help="Number of subprocesses to use for data loading.")
-
-    parser.add_argument("--loss_func", type=str, default="mae", choices=["mae", "mse", "huber"], help="Choose loss function (choices: %(choices)s)")
-    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="weight rate")
-    parser.add_argument("--patience", type=int, default=6, help="How many epochs should model be trained without improvement.")
+    parser.add_argument("--num_workers", type=int, default=16, help="Number of subprocesses for data loading.")
+    parser.add_argument("--loss_func", type=str, default="mae", choices=["mae", "mse", "huber"], help="Choose loss function.")
+    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate.")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay.")
+    parser.add_argument("--patience", type=int, default=6, help="Early stopping patience.")
 
     return parser
 
@@ -68,7 +97,7 @@ def prepare_and_save_scalers(power_splits: dict, sat_splits: dict, args: argpars
         print(f"  - {split_name.capitalize():<5}: {num_records:,} rows ({num_sat_files:,} sat files) | {start_time} -> {end_time}")
 
     print("Fitting and transforming power data (PowerScaler)...")
-    power_scaler = PowerScaler(target_col=args.target_col, input_cols=pd.unique(args.history_cols + args.future_cols)))
+    power_scaler = PowerScaler(target_col=args.target_col, input_cols=pd.unique(args.history_cols + args.future_cols))
     power_scaler.fit(train_dataset_df=power_splits["train"])
     
     for split in ["train", "val", "test"]:
@@ -91,7 +120,7 @@ def prepare_and_save_scalers(power_splits: dict, sat_splits: dict, args: argpars
 
 def main(args: argparse.Namespace):
     print("Loading and splitting data...")
-    dataset = processing.load_dataset(dataset_path=args.dataset_path, target_col=args.target_col, input_cols= args.input_cols)
+    dataset = processing.load_dataset(dataset_path=args.dataset_path, target_col=args.target_col)
     satellite_data = processing.load_satellite_map(sat_dir=args.sat_dir)
     power_splits, sat_splits = processing.create_splits(dataset_df=dataset, sat_map=satellite_data, train_ratio=args.train_ratio, val_ratio=args.val_ratio)
 
