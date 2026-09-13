@@ -1,6 +1,7 @@
 import torch
 import argparse
 from src.models.layers.ConvLSTM import ConvLSTM
+from src.models.layers.cross_attention import CrossAttention 
 
 class HistoryMeteoEncoder(torch.nn.Module):
     def __init__(self, input_size: int, hidden_size: int, cnn_filters: int, cnn_kernel: int, dropout: float):
@@ -155,25 +156,25 @@ class HistoryPowerEncoder(torch.nn.Module):
         self._dropout = torch.nn.Dropout(p=dropout)
 
     def forward(self, x_power: torch.Tensor) -> torch.Tensor:
-        # x_power očekáván v tvaru: [B, T_hist, 1] nebo [B, T_hist]
+        # x_power [B, T_hist, 1] or [B, T_hist]
         if x_power.dim() == 2:
             x_power = x_power.unsqueeze(-1)  # [B, T_hist] -> [B, T_hist, 1]
 
         # Transpozice pro Conv1d: [B, T, C] -> [B, C, T]
         x = x_power.transpose(1, 2)
 
-        # 1D ResNet blok pro zachycení rychlých zmen výkonu
+        # 1D ResNet
         res = self._act(self._bn1(self._conv1(x)))
         x = self._act(res + self._bn2(self._conv2(res)))
 
-        # Transpozice zpět pro LSTM: [B, C, T] -> [B, T, C]
+        # LSTM: [B, C, T] -> [B, T, C]
         x = x.transpose(1, 2)
 
-        # LSTM sekvenční zpracování
+        # LSTM
         h, _ = self._lstm(x)
         h = self._dropout(h)
 
-        return h  # Výstup: [B, T_hist, 2 * hidden_size]
+        return h  # [B, T_hist, 2 * hidden_size]
 
 class Decoder(torch.nn.Module):
     class LearnablePositionalEncoding(torch.nn.Module):
@@ -184,22 +185,36 @@ class Decoder(torch.nn.Module):
         def forward(self, x:torch.Tensor) -> torch.Tensor:
             return x + self.positional_emb
         
-    def __init__(self, future_nwp_dim: int, history_nwp_dim: int, power_history_dim: int, sat_dim: int, attention_dim: int, 
-                 t_future_nwp: int, t_history_nwp: int, t_power: int, dropout: float = 0.1,):
-        """
-        sat_dim = channels
-        """
+    def __init__(self, future_nwp_dim: int, history_nwp_dim: int, power_history_dim: int, sat_shape: tuple[int, int, int, int], attention_dim: int,  feed_forward_net_dim: int,
+                 t_future_nwp: int, t_history_nwp: int, t_power: int, dropout: float = 0.1, num_heads=2):
         super().__init__()
+
+        sat_channels = sat_shape[1]
 
         self.projection_query = torch.nn.Linear(in_features=future_nwp_dim, out_features=attention_dim)
         self.projection_history_nwp = torch.nn.Linear(in_features=history_nwp_dim, out_features=attention_dim)
         self.projection_power_history = torch.nn.Linear(in_features=power_history_dim, out_features=attention_dim)
-        self.projection_sat = torch.nn.Linear(in_features=sat_dim, out_features=attention_dim)
+        self.projection_sat = torch.nn.Linear(in_features=sat_channels, out_features=attention_dim)
 
         self.position_future_nwp = self.LearnablePositionalEncoding(shape=(t_future_nwp, attention_dim))
         self.position_history_nwp = self.LearnablePositionalEncoding(shape=(t_history_nwp, attention_dim))
         self.position_power = self.LearnablePositionalEncoding(shape=(t_power, attention_dim))
-        self.position_sat = self.LearnablePositionalEncoding(shape=sat_dim)
+        self.position_sat = self.LearnablePositionalEncoding(shape=sat_shape,)
+
+        self.cross_attention = CrossAttention(embedding_dim=attention_dim, num_heads=num_heads, dropout=dropout)
+
+        self.norm1 = torch.nn.LayerNorm(attention_dim)
+        self.norm2 = torch.nn.LayerNorm(attention_dim)
+
+        self.feed_forward_net = torch.nn.Sequential(
+            torch.nn.Linear(in_features=attention_dim, out_features=feed_forward_net_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(in_features=feed_forward_net_dim, out_features=attention_dim)
+        )
+        self.prediction_head = torch.nn.Sequential(
+            torch.nn.Linear(in_features=attention_dim, out_features=1),
+            torch.nn.ReLU()
+        ) 
 
     def forward(self, encoded_future_nwp: torch.Tensor, encoded_history_nwp: torch.Tensor, encoded_history_power: torch.Tensor, encoded_sat: torch.Tensor) -> torch.Tensor:
         query = self.position_future_nwp(self.projection_query(encoded_future_nwp))
@@ -214,7 +229,21 @@ class Decoder(torch.nn.Module):
 
         key_value = torch.cat([key_value_history_nwp, key_value_history_power, key_value_sat], dim=1)
 
-        return query, key_value
+        atten_out, atten_weights = self.cross_attention(query=query, key_value= key_value)
+
+        x = self.norm1(query + atten_out)
+        x = self.norm2(x + self.feed_forward_net(x)) # [B, T_future, attention_dim]
+
+        power15min_predicts = self.prediction_head(x) # [B, T_future, 1]
+        power15min_predicts = power15min_predicts.squeeze(-1)
+
+        b, t_15m = power15min_predicts.shape
+        t_hours = t_15m // 4
+
+        power_hourly = power15min_predicts.view(b, t_hours, 4).mean(dim=-1)
+
+        return power_hourly, atten_weights
+
 
 class Model(torch.nn.Module):
     def __init__(self, args: argparse.Namespace) -> None:
@@ -246,7 +275,7 @@ class Model(torch.nn.Module):
             dropout=args.future_dropout
         )
 
-        self.encoder_satellite = SatelliteEncoder(hidden_dim=64, kernel_size=3, bias=True, norm_type="group")
+        self.encoder_satellite = SatelliteEncoder(hidden_dim=args.sat_hidden_dim, kernel_size=3, bias=True, norm_type="group")
 
         self.encoder_history_power = HistoryPowerEncoder(
             input_size=1,  
@@ -262,10 +291,12 @@ class Model(torch.nn.Module):
             power_history_dim=2 * args.power_hidden_size,
             sat_shape=(args.seq_len_in, args.sat_hidden_dim, args.sat_h_out, args.sat_w_out),
             attention_dim=args.attention_dim,
+            feed_forward_net_dim=args.feed_forward_net_dim,
             t_future_nwp=args.seq_len_out_15m,
             t_history_nwp=args.seq_len_in,
             t_power=args.seq_len_history_power,
-            dropout=0.1
+            dropout=args.dropout,
+            num_heads=args.num_heads
         )
 
     def forward(self, sat_file_map: torch.Tensor, meteo_history: torch.Tensor, meteo_future: torch.Tensor, history_power: torch.Tensor):
@@ -274,9 +305,11 @@ class Model(torch.nn.Module):
         encoded_satellite = self.encoder_satellite(sat_file_map)
         encoded_history_power = self.encoder_history_power(history_power)
 
-        query, key_value = self.decoder(
+        power_predicts, atten_weights = self.decoder(
             encoded_future_nwp=encoded_future_meteo,
             encoded_history_nwp=encoded_history_meteo,
             encoded_history_power=encoded_history_power,
             encoded_sat=encoded_satellite
         )
+
+        return power_predicts
