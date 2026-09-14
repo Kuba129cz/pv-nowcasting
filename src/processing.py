@@ -43,7 +43,11 @@ def load_dataset(dataset_path: str|Path, target_col: str, input_cols: list[str] 
     if missing_cols:
         raise KeyError(f"Missing columns {missing_cols} in {dataset_path.name}.\nAvailable: {list(dataset.columns)}")
     
-    return dataset[cols_to_check].dropna().sort_index()
+    dataset = dataset[cols_to_check].sort_index()
+    if input_cols:
+        dataset = dataset.dropna(subset=input_cols)
+        
+    return dataset
 
 def load_satellite_map(sat_dir: str|Path) -> dict[pd.Timestamp, Path]:
     """
